@@ -56,7 +56,7 @@ def load_checkpoints(continue_from, ws, experiment_directory, lat_vecs, decoder,
     return lat_vecs, decoder, optimizer_all, start_epoch, loss_log, lr_log, timing_log, start_epoch
 
 
-def main_function(experiment_directory, continue_from, batch_split):
+def main_function(experiment_directory, continue_from, batch_split, specs):
 
     def save_latest(epoch):
         save_model(ws, experiment_directory, "latest.pth", decoder, epoch)
@@ -69,9 +69,6 @@ def main_function(experiment_directory, continue_from, batch_split):
         save_latent_vectors(ws, experiment_directory, str(epoch) + ".pth", lat_vecs, epoch)
 
     signal.signal(signal.SIGINT, signal_handler)
-
-    # load specs 
-    specs = ws.load_experiment_specifications(experiment_directory)
 
     data_source = specs["DataSource"]
     train_split_file = specs["TrainSplit"]
@@ -108,11 +105,21 @@ def main_function(experiment_directory, continue_from, batch_split):
     checkpoints.sort()
 
     # init dataloader
-    with open(train_split_file, "r") as f:
-        train_split = json.load(f)
-
-    sdf_dataset = asdf.data.SDFSamples(
-        data_source, train_split, num_samp_per_scene, load_ram=False, articulation=specs["Articulation"], num_atc_parts=specs["NumAtcParts"])
+    if "OurData" in specs and specs["OurData"]:
+        sdf_dataset = asdf.data.OurSDFSamples(
+            data_source, 
+            train_split_file, 
+            num_samp_per_scene, 
+            specs["BasePathOurs"],
+            load_ram=True,
+            return_joint_type=specs["JointTypeInput"]
+        )
+    else:
+        with open(train_split_file, "r") as f:
+            train_split = json.load(f)
+    
+        sdf_dataset = asdf.data.SDFSamples(
+            data_source, train_split, num_samp_per_scene, load_ram=False, articulation=specs["Articulation"], num_atc_parts=specs["NumAtcParts"])
 
     scene_per_batch = specs["ScenesPerBatch"]
     num_data_loader_threads =specs["DataLoaderThreads"]
@@ -125,7 +132,7 @@ def main_function(experiment_directory, continue_from, batch_split):
     )
     
     # init model and shape codes
-    decoder = arch.Decoder(num_atc_parts=specs["NumAtcParts"], do_sup_with_part=specs["TrainWithParts"]).cuda()
+    decoder = arch.Decoder(num_atc_parts=specs["NumAtcParts"], joint_type_input=specs["JointTypeInput"], do_sup_with_part=specs["TrainWithParts"]).cuda()
     decoder = torch.nn.DataParallel(decoder)
 
     if specs["Articulation"]==True:
@@ -192,7 +199,11 @@ def main_function(experiment_directory, continue_from, batch_split):
                 sdf_data = all_sdf_data[0].reshape(-1, 5)
                 atc = all_sdf_data[1].view(-1,specs["NumAtcParts"])
                 instance_idx = all_sdf_data[2].view(-1,1)
+                if specs["JointTypeInput"]:
+                    joint_type = all_sdf_data[3].view(-1, 2)
                 atc = atc.repeat(1, all_sdf_data[0].size(1)).reshape(-1, specs["NumAtcParts"])
+                if specs["JointTypeInput"]:
+                    joint_type = joint_type.repeat(1, all_sdf_data[0].size(1)).reshape(-1, 2 * specs["NumAtcParts"])
                 instance_idx = instance_idx.repeat(1, all_sdf_data[0].size(1)).reshape(-1, 1)
                 num_sdf_samples = sdf_data.shape[0]
                 sdf_data[0].requires_grad = False
@@ -200,7 +211,6 @@ def main_function(experiment_directory, continue_from, batch_split):
                 xyz = sdf_data[:, 0:3].float()
                 sdf_gt = sdf_data[:, 3].unsqueeze(1)
                 part_gt = sdf_data[:, 4].unsqueeze(1).long()
-
             else:
                 sdf_data = all_sdf_data.reshape(-1, 5)
                 num_sdf_samples = sdf_data.shape[0]
@@ -225,6 +235,8 @@ def main_function(experiment_directory, continue_from, batch_split):
             if specs["Articulation"]==True:
                 atc = torch.chunk(atc, batch_split)
                 instance_idx = torch.chunk(instance_idx, batch_split)
+                if specs["JointTypeInput"]:
+                    joint_type = torch.chunk(joint_type, batch_split)
 
             batch_loss = 0.0
 
@@ -238,7 +250,10 @@ def main_function(experiment_directory, continue_from, batch_split):
                     batch_vecs = lat_vecs(indices[i])
 
                 # NN optimization
-                if specs["Articulation"]==True:
+                if specs["Articulation"]==True and specs["JointTypeInput"]:
+                    # Order is xyz 3, type 2*parts, atc 1*parts
+                    input = torch.cat([batch_vecs, xyz[i], joint_type[i], atc[i]], dim=1)
+                elif specs["Articulation"]==True and not specs["JointTypeInput"]:
                     input = torch.cat([batch_vecs, xyz[i], atc[i]], dim=1)
                 else:
                     input = torch.cat([batch_vecs, xyz[i]], dim=1)
@@ -332,6 +347,11 @@ if __name__ == "__main__":
         + "subbatches. This allows for training with large effective batch "
         + "sizes in memory constrained environments.",
     )
+    arg_parser.add_argument(
+        "--ours-base-path",
+        dest="ours_base_path",
+        default = ""
+    )
 
     asdf.add_common_args(arg_parser)
 
@@ -339,4 +359,10 @@ if __name__ == "__main__":
 
     asdf.configure_logging(args)
 
-    main_function(args.experiment_directory, args.continue_from, int(args.batch_split))
+    # load specs 
+    specs = ws.load_experiment_specifications(args.experiment_directory)
+
+    if args.ours_base_path != "":
+        specs["BasePathOurs"] = args.ours_base_path
+
+    main_function(args.experiment_directory, args.continue_from, int(args.batch_split), specs)

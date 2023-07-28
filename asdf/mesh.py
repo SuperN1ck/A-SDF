@@ -8,11 +8,12 @@ import skimage.measure
 import time
 import torch
 
+import asdf
 import asdf.utils
 
 
 def create_mesh(
-    decoder, lat_vec, filename, N=256, max_batch=32 ** 3, offset=None, scale=None, atc_vec=None, do_sup_with_part=False, specs=None,
+    decoder, lat_vec, filename, N=256, max_batch=32 ** 3, offset=None, scale=None, atc_vec=None, joint_type_vec=None, do_sup_with_part=False, specs=None,
 ):
     start = time.time()
     ply_filename = filename
@@ -49,7 +50,7 @@ def create_mesh(
 
         if atc_vec is not None:
             samples[head : min(head + max_batch, num_samples), 3] = (
-                asdf.utils.decode_sdf(decoder, lat_vec, sample_subset, atc_vec=atc_vec, do_sup_with_part=do_sup_with_part, specs=specs)
+                asdf.decode_sdf(decoder, lat_vec, sample_subset, atc_vec=atc_vec, joint_type_vec=joint_type_vec, do_sup_with_part=do_sup_with_part, specs=specs)
                 .squeeze(1)
                 .detach()
                 .cpu()
@@ -57,7 +58,7 @@ def create_mesh(
 
         else:
             samples[head : min(head + max_batch, num_samples), 3] = (
-                asdf.utils.decode_sdf(decoder, lat_vec, sample_subset, specs=specs)
+                asdf.decode_sdf(decoder, lat_vec, sample_subset, specs=specs)
                 .squeeze(1)
                 .detach()
                 .cpu()
@@ -106,8 +107,9 @@ def convert_sdf_samples_to_ply(
 
     numpy_3d_sdf_tensor = pytorch_3d_sdf_tensor.numpy()
 
-    verts, faces, normals, values = skimage.measure.marching_cubes_lewiner(
-        numpy_3d_sdf_tensor, level=0.0, spacing=[voxel_size] * 3
+    level = numpy_3d_sdf_tensor.min() + 1e-5 if numpy_3d_sdf_tensor.min() > 0.0 else 0.0
+    verts, faces, normals, values = skimage.measure.marching_cubes(
+        numpy_3d_sdf_tensor, level=level, spacing=[voxel_size] * 3
     )
 
     # transform from voxel coordinates to camera coordinates

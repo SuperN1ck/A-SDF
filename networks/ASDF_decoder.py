@@ -6,17 +6,19 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 
+
 class Decoder(nn.Module):
     def __init__(
         self,
         latent_size=253,
-        dims = [512,512,512,768,512,512,512,512],
-        dropout=[0,1,2,3,4,5,6,7],
+        dims=[512, 512, 512, 768, 512, 512, 512, 512],
+        dropout=[0, 1, 2, 3, 4, 5, 6, 7],
         dropout_prob=0.2,
-        norm_layers=[0,1,2,3,4,5,6,7],
+        norm_layers=[0, 1, 2, 3, 4, 5, 6, 7],
         latent_in=[4],
-        articulation=True,# for development
-        num_atc_parts=1,
+        articulation=True,  # for development
+        joint_type_input=False,  # whether we also input the joint type
+        num_atc_parts=1,  # Number of parts
         do_sup_with_part=False,
     ):
         super(Decoder, self).__init__()
@@ -24,25 +26,32 @@ class Decoder(nn.Module):
         def make_sequence():
             return []
 
-        if articulation==True:
-            dims = [latent_size + 3] + dims + [1]
-            self.fc1 = nn.utils.weight_norm(nn.Linear(num_atc_parts+3, 256))
+        if articulation == True:
+            dims = [latent_size + 3] + dims + [1]  # Appends 256 to the front
+            self.fc1 = nn.utils.weight_norm(
+                nn.Linear((num_atc_parts * (3 if joint_type_input else 1)) + 3, 256)
+            )
         else:
+            # Potentially broken code;
+            # This won't work if articulaiton is false since we do not set self.fc1 then
             dims = [latent_size + 3] + dims + [1]
 
         if do_sup_with_part:
-            self.part_fc = nn.utils.weight_norm(nn.Linear(512,num_atc_parts+2))
+            self.part_fc = nn.utils.weight_norm(
+                nn.Linear(512, num_atc_parts + 2)
+            )  # Magic 2?
 
         self.num_layers = len(dims)
         self.norm_layers = norm_layers
         self.latent_in = latent_in
 
         self.num_atc_parts = num_atc_parts
+        self.joint_type_input = joint_type_input
         self.do_sup_with_part = do_sup_with_part
 
         for layer in range(0, self.num_layers - 1):
             if layer + 1 in latent_in:
-                out_dim = dims[layer + 1] - dims[0]*2
+                out_dim = dims[layer + 1] - dims[0] * 2
             else:
                 out_dim = dims[layer + 1]
 
@@ -61,15 +70,39 @@ class Decoder(nn.Module):
         self.th = nn.Tanh()
         print(self)
 
-    # input: N x (L+3+num_atc_parts)
+    # input: N x (L + 3 + num_atc_parts) # if no joint type is given
+    # We input a list
+    # input: N x (L + 3 + num_atc_parts + 2 * num_atc_parts) # if joint type is given
+    # num_atc_parts: joint state is last
+    # 2 * num_atc_parts: binary input of joint type
     def forward(self, input):
-
-        xyz_atc = input[:, -(self.num_atc_parts+3):] # xyz + articulation (3+1)
-        xyz_atc[:,3:] = xyz_atc[:,3:]/100
+        # xyz + articulation (3+1) no type
+        # xyz + articulation (3+2+1) with type
+        xyz_atc = input[
+            :, -(self.num_atc_parts * (3 if self.joint_type_input else 1) + 3) :
+        ]
+        # RuntimeError: Output 0 of SliceBackward is a view and is being modified inplace.
+        # This view is the output of a function that returns multiple views.
+        # Such functions do not allow the output views to be modified inplace.
+        # You should replace the inplace operation by an out-of-place one.
+        # xyz_atc[:,3:] = xyz_atc[:,3:]/100
+        # Below is a solution for it,
+        # TODO: Should we remove it completely as our data is in radians/m --> already much smaller?
+        xyz_atc = torch.cat(
+            [
+                xyz_atc[
+                    :, : 3 + self.num_atc_parts * (2 if self.joint_type_input else 0)
+                ],
+                xyz_atc[:, -self.num_atc_parts :] / 100,
+            ],
+            dim=1,
+        )
         xyz_atc = self.fc1(xyz_atc)
         atc_emb = self.relu(xyz_atc)
 
-        xyz_shape = input[:, :-self.num_atc_parts]
+        xyz_shape = input[
+            :, : -self.num_atc_parts * (3 if self.joint_type_input else 1)
+        ]
         x = xyz_shape
 
         for layer in range(0, self.num_layers - 1):
@@ -77,7 +110,7 @@ class Decoder(nn.Module):
             if layer in self.latent_in:
                 x = torch.cat([x, xyz_shape, atc_emb], 1)
 
-            if layer<self.num_layers-2:
+            if layer < self.num_layers - 2:
                 x = lin(x)
 
             if layer < self.num_layers - 2:

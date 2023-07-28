@@ -134,6 +134,30 @@ def get_recon_testset_mesh_filename(
         instance_name + ".ply",
     )
 
+def get_recon_testset_error_file_name(
+    experiment_dir, epoch, dataset, class_name, instance_name
+):
+    return os.path.join(
+        experiment_dir,
+        recon_testset_subdir,
+        str(epoch),
+        reconstruction_codes_subdir,
+        dataset,
+        instance_name + ".error.npy",
+    )
+
+def get_recon_testset_joint_type_error_file_name(
+    experiment_dir, epoch, dataset, class_name, instance_name
+):
+    return os.path.join(
+        experiment_dir,
+        recon_testset_subdir,
+        str(epoch),
+        reconstruction_codes_subdir,
+        dataset,
+        instance_name + "_type.error.npy",
+    )
+
 def get_recon_testset_ttt_mesh_filename(
     experiment_dir, epoch, dataset, class_name, instance_name
 ):
@@ -147,6 +171,17 @@ def get_recon_testset_ttt_mesh_filename(
         instance_name + ".ply",
     )
 
+def get_recon_testset_ttt_error_file_name(
+    experiment_dir, epoch, dataset, class_name, instance_name
+):
+    return os.path.join(
+        experiment_dir,
+        recon_testset_ttt_subdir,
+        str(epoch),
+        reconstruction_codes_subdir,
+        dataset,
+        instance_name + ".error.npy",
+    )
 
 
 def get_recon_testset_code_filename(

@@ -7,6 +7,8 @@ import torch.nn as nn
 import numpy as np
 import sys
 import os
+import json
+import asdf.workspace as ws
 
 def add_common_args(arg_parser):
     arg_parser.add_argument(
@@ -51,7 +53,7 @@ def configure_logging(args):
         logger.addHandler(file_logger_handler)
 
 
-def decode_sdf(decoder, latent_vector, queries, atc_vec=None, do_sup_with_part=False, specs=None):
+def decode_sdf(decoder, latent_vector, queries, atc_vec=None, joint_type_vec=None, do_sup_with_part=False, specs=None):
     num_samples = queries.shape[0]
 
     if latent_vector is None:
@@ -60,8 +62,11 @@ def decode_sdf(decoder, latent_vector, queries, atc_vec=None, do_sup_with_part=F
         latent_vecs = latent_vector.expand(num_samples, -1)
         if atc_vec is not None:
             atc_vecs = atc_vec.expand(num_samples, -1).cuda()
-            inputs = torch.cat([latent_vecs, queries, atc_vecs], 1)
-
+            if joint_type_vec is None:
+                inputs = torch.cat([latent_vecs, queries, atc_vecs], 1)
+            else:
+                joint_type_vecs = joint_type_vec.expand(num_samples, -1).cuda()
+                inputs = torch.cat([latent_vecs, queries, joint_type_vecs, atc_vecs], 1)
         else:
             inputs = torch.cat([latent_vecs, queries], 1)
 
@@ -287,3 +292,24 @@ def adjust_learning_rate(lr_schedules, optimizer, epoch):
 
     for i, param_group in enumerate(optimizer.param_groups):
         param_group["lr"] = lr_schedules[i].get_learning_rate(epoch)
+
+def load_from_experiment(experiment_name: str, base_path_ours, checkpoint):
+    specs_filename = experiment_name / "specs.json"
+    if not os.path.isfile(specs_filename):
+        raise Exception(
+            'The experiment directory does not include specifications file "specs.json"'
+        )
+    specs = json.load(open(specs_filename))
+    arch = __import__("networks." + specs["NetworkArch"], fromlist=["Decoder"])
+    latent_size = specs["CodeLength"]
+    #decoder = arch.Decoder(latent_size, **specs["NetworkSpecs"], articulation=specs["Articulation"], num_atc_parts=specs["NumAtcParts"], do_sup_with_part=specs["TrainWithParts"]).cuda()
+    decoder = arch.Decoder(latent_size, articulation=specs["Articulation"], num_atc_parts=specs["NumAtcParts"], do_sup_with_part=specs["TrainWithParts"]).cuda()
+    decoder = torch.nn.DataParallel(decoder)
+    decoder.eval()
+
+    saved_model_state = torch.load(
+            experiment_name /  ws.model_params_subdir/  f"{checkpoint}.pth"
+    )
+    saved_model_epoch = saved_model_state["epoch"]
+    decoder.load_state_dict(saved_model_state["model_state_dict"])
+    return decoder, specs

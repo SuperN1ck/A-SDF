@@ -20,7 +20,7 @@ def test(args, ws, specs):
     arch = __import__("networks." + specs["NetworkArch"], fromlist=["Decoder"])
     latent_size = specs["CodeLength"]
     #decoder = arch.Decoder(latent_size, **specs["NetworkSpecs"], articulation=specs["Articulation"], num_atc_parts=specs["NumAtcParts"], do_sup_with_part=specs["TrainWithParts"]).cuda()
-    decoder = arch.Decoder(latent_size, articulation=specs["Articulation"], num_atc_parts=specs["NumAtcParts"], do_sup_with_part=specs["TrainWithParts"]).cuda()
+    decoder = arch.Decoder(latent_size, articulation=specs["Articulation"], joint_type_input=specs["JointTypeInput"], num_atc_parts=specs["NumAtcParts"], do_sup_with_part=specs["TrainWithParts"]).cuda()
     decoder = torch.nn.DataParallel(decoder)
     decoder.eval()
 
@@ -35,19 +35,30 @@ def test(args, ws, specs):
     dataset_name=args.dataset
     test_split_file = specs["TestSplit"]
     # test objs
-    if args.mode=='recon_testset':
-        # test files
+    if "OurData" in specs and specs["OurData"]:
+        npz_filenames = asdf.data.OurSDFSamples(
+            specs["DataSource"], 
+            test_split_file, 
+            1e9, 
+            specs["BasePathOurs"], 
+            file_id_selection="test", 
+            load_ram=True, 
+            return_pos_neg_split=True,
+            return_joint_type=specs["JointTypeInput"],
+        )
+    else:
+    # test files
         with open(test_split_file, "r") as f:
             split = json.load(f)
         npz_filenames = asdf.data.get_instance_filenames(args.data_source, split)
+    
+    assert args.mode in ["recon_testset" , "recon_testset_ttt"], "Unknown Mode"
+
+    if args.mode=='recon_testset':
         # reconstruct test files
         reconstruct_testset(args, ws, specs, decoder, npz_filenames, saved_model_epoch, dataset_name)
 
     elif args.mode=='recon_testset_ttt':
-        # test files
-        with open(test_split_file, "r") as f:
-            split = json.load(f)
-        npz_filenames = asdf.data.get_instance_filenames(args.data_source, split)
         # reconstruct test files
         reconstruct_testset_ttt(args, ws, specs, decoder, npz_filenames, saved_model_state, dataset_name)
     
@@ -174,6 +185,12 @@ if __name__ == "__main__":
         default="shape2motion",
         help="shape2motion/shape2motion-1-view/real(for laptop only)",
     )
+    arg_parser.add_argument(
+        "--ours-base-path",
+        dest="ours_base_path",
+        default = ""
+    )
+
     
     # args and specs
     asdf.add_common_args(arg_parser)
@@ -185,12 +202,7 @@ if __name__ == "__main__":
             'The experiment directory does not include specifications file "specs.json"'
         )
     specs = json.load(open(specs_filename))
+    if args.ours_base_path != "":
+        specs["BasePathOurs"] = args.ours_base_path
 
     test(args, ws, specs)
-    
-
-    
-    
-
-
-
